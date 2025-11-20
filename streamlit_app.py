@@ -6,44 +6,31 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
-# Note: sklearn.metrics.accuracy_score is not strictly needed for the app's functionality but is kept for completeness/debugging.
 
-# ----------------------------------------------------
-# 1. PAGE CONFIGURATION
-# ----------------------------------------------------
-# Set up the basic configuration for the Streamlit page
 st.set_page_config(
     page_title="Telco Churn Explorer",
-    page_icon="🔎", # Using a non-emoji icon for a professional look
+    page_icon="🔎",
     layout="centered"
 )
 
 st.title("Telco Churn Explorer")
 st.write("Interactively explore churn predictions using Machine Learning and SHAP feature explanations.")
 
-# ----------------------------------------------------
-# 2. LOAD AND PREPARE DATA
-# ----------------------------------------------------
-# Use Streamlit's cache decorator to prevent reloading the data on every rerun
 @st.cache_data
 def load_data():
     """Loads, cleans, and prepares the Telco Churn dataset."""
-    url = "https://raw.githubusercontent.com/blastchar/telco-customer-churn/master/Telco-Customer-Churn.csv"
+    url = "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
     df = pd.read_csv(url)
     
-    # Convert TotalCharges to numeric, coercing errors (empty strings are NaN)
     df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
     
-    # Fill missing TotalCharges (occurs when tenure is 0) with the median
     df["TotalCharges"].fillna(df["TotalCharges"].median(), inplace=True)
 
-    # Convert the target variable 'Churn' to numerical (1 for Yes, 0 for No)
     df["Churn"] = df["Churn"].map({"Yes": 1, "No": 0})
     return df
 
 df = load_data()
 
-# Define features based on their data type
 categorical_cols = [
     "gender", "Partner", "Dependents", "PhoneService", "MultipleLines",
     "InternetService", "OnlineSecurity", "OnlineBackup", "DeviceProtection",
@@ -53,32 +40,21 @@ categorical_cols = [
 
 numeric_cols = ["tenure", "MonthlyCharges", "TotalCharges"]
 
-# Define feature matrix X and target vector y
 X = df[categorical_cols + numeric_cols]
 y = df["Churn"]
 
-# ----------------------------------------------------
-# 3. MODEL TRAINING (Pipeline with One-Hot Encoding)
-# ----------------------------------------------------
-# Use Streamlit's cache_resource to store the trained model object
 @st.cache_resource
 def train_model(X_data, y_data, numeric_features, categorical_features):
     """Defines and trains the Random Forest model pipeline."""
     
-    # 1. Preprocessor setup
     preprocessor = ColumnTransformer(
         transformers=[
-            # Scale numeric features using StandardScaler
             ("num", StandardScaler(), numeric_features),
-            # One-Hot Encode categorical features. handle_unknown='ignore' is crucial
-            # to prevent errors if a category appears in the test/input data that wasn't
-            # in the training data (though less likely here). sparse_output=False for SHAP compatibility.
             ("cat", OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)
         ],
-        remainder='drop' # Drop any features not explicitly listed above
+        remainder='drop' 
     )
 
-    # 2. Pipeline definition
     model_pipeline = Pipeline(steps=[
         ("pre", preprocessor),
         ("clf", RandomForestClassifier(
