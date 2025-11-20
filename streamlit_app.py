@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
-import shap
+# Removed 'shap' import
+import numpy as np
+import matplotlib.pyplot as plt # Added matplotlib for plotting feature importance
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
@@ -18,7 +20,7 @@ st.set_page_config(
 )
 
 st.title("Telco Churn Explorer")
-st.write("Interactively explore churn predictions using Machine Learning and SHAP feature explanations.")
+st.write("Interactively explore churn predictions using Machine Learning and feature importance.")
 
 # ----------------------------------------------------
 # 2. LOAD AND PREPARE DATA
@@ -27,14 +29,13 @@ st.write("Interactively explore churn predictions using Machine Learning and SHA
 @st.cache_data
 def load_data():
     """Loads, cleans, and prepares the Telco Churn dataset."""
-    # Updated to a new, verified URL from a stable IBM repository to fix the 404 error
+    # Updated to a new, verified URL from a stable IBM repository
     url = "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
     df = pd.read_csv(url)
     
     # Convert TotalCharges to numeric, coercing errors (empty strings are NaN)
     df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
     
-    # Fix FutureWarning: Replace inplace=True with direct assignment
     # Fill missing TotalCharges (occurs when tenure is 0) with the median
     df["TotalCharges"] = df["TotalCharges"].fillna(df["TotalCharges"].median())
 
@@ -71,9 +72,7 @@ def train_model(X_data, y_data, numeric_features, categorical_features):
         transformers=[
             # Scale numeric features using StandardScaler
             ("num", StandardScaler(), numeric_features),
-            # One-Hot Encode categorical features. handle_unknown='ignore' is crucial
-            # to prevent errors if a category appears in the test/input data that wasn't
-            # in the training data (though less likely here). sparse_output=False for SHAP compatibility.
+            # One-Hot Encode categorical features. sparse_output=False for compatibility.
             ("cat", OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)
         ],
         remainder='drop' # Drop any features not explicitly listed above
@@ -93,7 +92,7 @@ def train_model(X_data, y_data, numeric_features, categorical_features):
     # 3. Model training
     model_pipeline.fit(X_data, y_data)
     
-    # Return both the trained pipeline and the preprocessor (needed for SHAP)
+    # Return the trained pipeline
     return model_pipeline, preprocessor
 
 model, preprocessor = train_model(X, y, numeric_cols, categorical_cols)
@@ -175,50 +174,32 @@ else:
     st.success("This customer is unlikely to churn. Recommended action: Standard account monitoring.")
 
 # ----------------------------------------------------
-# 6. SHAP EXPLAINER
+# 6. FEATURE IMPORTANCE VISUALIZATION (SHAP Alternative)
 # ----------------------------------------------------
-st.subheader("SHAP Feature Explanation")
-st.write("The following visualization shows how each feature contributes to the final churn prediction, pushing it toward Churn (red) or No Churn (blue).")
+st.subheader("Model Feature Importance")
+st.write("This chart shows the global importance of each feature in the Random Forest model.")
 
-# Initialize the SHAP TreeExplainer using the Random Forest Classifier part of the pipeline
-explainer = shap.TreeExplainer(model["clf"])
-
-# Get the feature names from the OneHotEncoder step
+# Get feature names after OHE
 ohe_feature_names = model["pre"].named_transformers_["cat"].get_feature_names_out(categorical_cols)
 all_feature_names = list(numeric_cols) + list(ohe_feature_names)
 
-# Transform the input data using the trained preprocessor
-input_transformed = model["pre"].transform(input_df)
+# Extract feature importances from the trained Random Forest classifier
+importances = model["clf"].feature_importances_
 
-# Calculate SHAP values for the transformed input
-shap_values = explainer.shap_values(input_transformed)
+# Create a Series of feature importances
+feature_importances = pd.Series(importances, index=all_feature_names)
 
-# --- FIX for IndexError: Check if shap_values is a list of arrays (multiple classes) or a single array ---
-if isinstance(shap_values, list):
-    # If it's a list, the second element (index 1) corresponds to the positive class (Churn)
-    shap_values_to_plot = shap_values[1]
-    expected_value_to_plot = explainer.expected_value[1]
-else:
-    # If it's a single array, it already corresponds to the single predicted class.
-    shap_values_to_plot = shap_values
-    # For single prediction, explainer.expected_value is usually a single float for TreeExplainer
-    expected_value_to_plot = explainer.expected_value[1] if isinstance(explainer.expected_value, list) else explainer.expected_value
+# Select top 15 features for clarity and sort them
+top_features = feature_importances.sort_values(ascending=False).head(15)
 
+# Create the plot
+fig, ax = plt.subplots(figsize=(10, 6))
+top_features.plot.barh(ax=ax, color='teal')
+ax.set_title("Top 15 Model Feature Importances (Gini Index)")
+ax.set_xlabel("Importance Score")
+ax.set_ylabel("Feature")
+plt.gca().invert_yaxis() # Display the most important feature at the top
+plt.tight_layout()
 
-# Create a DataFrame for the SHAP force plot input
-# Note: Input must be the transformed data, but the feature names map to the original OHE columns
-shap_input_df = pd.DataFrame(input_transformed, columns=all_feature_names)
-
-# Plot SHAP force plot for the Churn (1) class
-shap.initjs()
-
-# --- FIX for TypeError: Use 'features=' keyword argument instead of positional argument ---
-force_plot_html = shap.force_plot(
-    expected_value_to_plot,
-    shap_values_to_plot,
-    features=shap_input_df, # Explicitly pass feature values using the 'features' keyword
-    matplotlib=False
-)
-
-# Render SHAP in Streamlit using st.components.v1.html
-st.components.v1.html(force_plot_html.html(), height=350, scrolling=True)
+# Display the plot in Streamlit
+st.pyplot(fig)
