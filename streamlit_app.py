@@ -200,11 +200,8 @@ if isinstance(shap_values, list):
     expected_value_to_plot = explainer.expected_value[1]
 else:
     # If it's a single array, it already corresponds to the single predicted class.
-    # We must assume the model is predicting the positive class (1) in this scenario
-    # or use the primary expected value if the model structure dictates it.
-    # Since we are focusing on the 'Churn' explanation, we use the single array.
     shap_values_to_plot = shap_values
-    # For single prediction, explainer.expected_value might be a single float or an array of size 1.
+    # For single prediction, explainer.expected_value is usually a single float for TreeExplainer
     expected_value_to_plot = explainer.expected_value[1] if isinstance(explainer.expected_value, list) else explainer.expected_value
 
 
@@ -215,10 +212,11 @@ shap_input_df = pd.DataFrame(input_transformed, columns=all_feature_names)
 # Plot SHAP force plot for the Churn (1) class
 shap.initjs()
 
+# --- FIX for TypeError: Use 'features=' keyword argument instead of positional argument ---
 force_plot_html = shap.force_plot(
     expected_value_to_plot,
     shap_values_to_plot,
-    shap_input_df,
+    features=shap_input_df, # Explicitly pass feature values using the 'features' keyword
     matplotlib=False
 )
 
