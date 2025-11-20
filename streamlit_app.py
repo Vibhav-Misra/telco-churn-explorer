@@ -1,46 +1,49 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import shap
-import joblib
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
+# Note: sklearn.metrics.accuracy_score is not strictly needed for the app's functionality but is kept for completeness/debugging.
 
 # ----------------------------------------------------
 # 1. PAGE CONFIGURATION
 # ----------------------------------------------------
+# Set up the basic configuration for the Streamlit page
 st.set_page_config(
     page_title="Telco Churn Explorer",
-    page_icon="📉",
+    page_icon="🔎", # Using a non-emoji icon for a professional look
     layout="centered"
 )
 
-st.title("📉 Telco Churn Explorer")
-st.write("Interactively explore churn predictions using ML + SHAP!")
+st.title("Telco Churn Explorer")
+st.write("Interactively explore churn predictions using Machine Learning and SHAP feature explanations.")
 
 # ----------------------------------------------------
-# 2. LOAD DATA
+# 2. LOAD AND PREPARE DATA
 # ----------------------------------------------------
+# Use Streamlit's cache decorator to prevent reloading the data on every rerun
 @st.cache_data
 def load_data():
+    """Loads, cleans, and prepares the Telco Churn dataset."""
     url = "https://raw.githubusercontent.com/blastchar/telco-customer-churn/master/Telco-Customer-Churn.csv"
     df = pd.read_csv(url)
     
-    # Clean TotalCharges (some have spaces)
+    # Convert TotalCharges to numeric, coercing errors (empty strings are NaN)
     df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
+    
+    # Fill missing TotalCharges (occurs when tenure is 0) with the median
     df["TotalCharges"].fillna(df["TotalCharges"].median(), inplace=True)
 
-    # Convert target
+    # Convert the target variable 'Churn' to numerical (1 for Yes, 0 for No)
     df["Churn"] = df["Churn"].map({"Yes": 1, "No": 0})
     return df
 
 df = load_data()
 
-# Features
+# Define features based on their data type
 categorical_cols = [
     "gender", "Partner", "Dependents", "PhoneService", "MultipleLines",
     "InternetService", "OnlineSecurity", "OnlineBackup", "DeviceProtection",
@@ -50,66 +53,95 @@ categorical_cols = [
 
 numeric_cols = ["tenure", "MonthlyCharges", "TotalCharges"]
 
+# Define feature matrix X and target vector y
 X = df[categorical_cols + numeric_cols]
 y = df["Churn"]
 
 # ----------------------------------------------------
-# 3. MODEL TRAINING (pipeline)
+# 3. MODEL TRAINING (Pipeline with One-Hot Encoding)
 # ----------------------------------------------------
+# Use Streamlit's cache_resource to store the trained model object
 @st.cache_resource
-def train_model():
+def train_model(X_data, y_data, numeric_features, categorical_features):
+    """Defines and trains the Random Forest model pipeline."""
+    
+    # 1. Preprocessor setup
     preprocessor = ColumnTransformer(
         transformers=[
-            ("num", StandardScaler(), numeric_cols),
-            ("cat", "passthrough", categorical_cols)  # RandomForest can handle encoded passthrough
-        ]
+            # Scale numeric features using StandardScaler
+            ("num", StandardScaler(), numeric_features),
+            # One-Hot Encode categorical features. handle_unknown='ignore' is crucial
+            # to prevent errors if a category appears in the test/input data that wasn't
+            # in the training data (though less likely here). sparse_output=False for SHAP compatibility.
+            ("cat", OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)
+        ],
+        remainder='drop' # Drop any features not explicitly listed above
     )
 
-    model = Pipeline(steps=[
+    # 2. Pipeline definition
+    model_pipeline = Pipeline(steps=[
         ("pre", preprocessor),
         ("clf", RandomForestClassifier(
             n_estimators=300,
             random_state=42,
-            class_weight="balanced"
+            class_weight="balanced", # Use balanced weights to handle class imbalance
+            n_jobs=-1
         ))
     ])
 
-    model.fit(X, y)
-    return model, preprocessor
+    # 3. Model training
+    model_pipeline.fit(X_data, y_data)
+    
+    # Return both the trained pipeline and the preprocessor (needed for SHAP)
+    return model_pipeline, preprocessor
 
-model, preprocessor = train_model()
+model, preprocessor = train_model(X, y, numeric_cols, categorical_cols)
 
 # ----------------------------------------------------
 # 4. SIDEBAR — USER INPUTS
 # ----------------------------------------------------
 st.sidebar.header("Adjust Customer Parameters")
+st.sidebar.write("Configure the profile of the customer you want to analyze.")
 
-tenure = st.sidebar.slider("Tenure (months)", 0, 72, 12)
-monthly_charges = st.sidebar.slider("Monthly Charges", 10, 120, 60)
+# Numerical Inputs
+tenure = st.sidebar.slider("Tenure (Months)", 0, 72, 12, help="Number of months the customer has stayed with the company.")
+monthly_charges = st.sidebar.slider("Monthly Charges ($)", 18.25, 118.75, 70.0, help="The amount charged to the customer monthly.")
+# Estimate TotalCharges based on tenure and monthly charges for simplicity
 total_charges = tenure * monthly_charges
 
-internet = st.sidebar.selectbox("Internet Service", ["DSL", "Fiber optic", "No"])
-contract = st.sidebar.selectbox("Contract Type", ["Month-to-month", "One year", "Two year"])
-payment = st.sidebar.selectbox("Payment Method", ["Electronic check", "Credit card", "Bank transfer", "Mailed check"])
-security = st.sidebar.selectbox("Online Security", ["Yes", "No"])
-partner = st.sidebar.selectbox("Partner", ["Yes", "No"])
+# Categorical Inputs
+# Core relationship features
+partner = st.sidebar.selectbox("Has Partner", ["No", "Yes"])
+dependents = st.sidebar.selectbox("Has Dependents", ["No", "Yes"])
 
-# Build a dictionary for prediction
+# Contract and Billing
+contract = st.sidebar.selectbox("Contract Type", ["Month-to-month", "One year", "Two year"])
+paperless = st.sidebar.selectbox("Paperless Billing", ["Yes", "No"])
+payment = st.sidebar.selectbox("Payment Method", ["Electronic check", "Mailed check", "Bank transfer (automatic)", "Credit card (automatic)"])
+
+# Internet and Security Services
+internet = st.sidebar.selectbox("Internet Service", ["Fiber optic", "DSL", "No"])
+security = st.sidebar.selectbox("Online Security", ["No", "Yes", "No internet service"])
+tech_support = st.sidebar.selectbox("Tech Support", ["No", "Yes", "No internet service"])
+online_backup = st.sidebar.selectbox("Online Backup", ["No", "Yes", "No internet service"])
+
+
+# Build a dictionary for prediction (using Male/No for gender/PhoneService/MultipleLines/Streaming defaults not explicitly controlled)
 input_dict = {
     "gender": "Male",
     "Partner": partner,
-    "Dependents": "No",
+    "Dependents": dependents,
     "PhoneService": "Yes",
     "MultipleLines": "No",
     "InternetService": internet,
     "OnlineSecurity": security,
-    "OnlineBackup": "No",
-    "DeviceProtection": "No",
-    "TechSupport": "No",
-    "StreamingTV": "No",
-    "StreamingMovies": "No",
+    "OnlineBackup": online_backup,
+    "DeviceProtection": "No internet service" if internet == "No" else "No", # Defaulting these based on InternetService
+    "TechSupport": tech_support,
+    "StreamingTV": "No internet service" if internet == "No" else "No",
+    "StreamingMovies": "No internet service" if internet == "No" else "No",
     "Contract": contract,
-    "PaperlessBilling": "Yes",
+    "PaperlessBilling": paperless,
     "PaymentMethod": payment,
     "tenure": tenure,
     "MonthlyCharges": monthly_charges,
@@ -121,39 +153,59 @@ input_df = pd.DataFrame([input_dict])
 # ----------------------------------------------------
 # 5. PREDICTION
 # ----------------------------------------------------
+# Get the probability of churn (class 1)
 prediction_prob = model.predict_proba(input_df)[0][1]
+# Get the hard prediction (0 or 1)
 prediction = model.predict(input_df)[0]
 
-st.subheader("🔮 Predicted Churn Probability")
+st.subheader("Predicted Churn Probability")
+
+# Display the probability with a metric widget
 st.metric(
     label="Churn Likelihood",
     value=f"{prediction_prob * 100:.2f}%",
     delta=None
 )
 
+# Provide a clear interpretation of the prediction
 if prediction == 1:
-    st.error("⚠️ This customer is likely to churn.")
+    st.error("This customer is likely to churn. Recommended action: Proactive retention strategy.")
 else:
-    st.success("✅ This customer is unlikely to churn.")
+    st.success("This customer is unlikely to churn. Recommended action: Standard account monitoring.")
 
 # ----------------------------------------------------
 # 6. SHAP EXPLAINER
 # ----------------------------------------------------
-st.subheader("🧠 SHAP Feature Explanation")
+st.subheader("SHAP Feature Explanation")
+st.write("The following visualization shows how each feature contributes to the final churn prediction, pushing it toward Churn (red) or No Churn (blue).")
 
+# Initialize the SHAP TreeExplainer using the Random Forest Classifier part of the pipeline
 explainer = shap.TreeExplainer(model["clf"])
-shap_values = explainer.shap_values(model["pre"].transform(input_df))
 
-# Plot SHAP force plot
+# Get the feature names from the OneHotEncoder step
+ohe_feature_names = model["pre"].named_transformers_["cat"].get_feature_names_out(categorical_cols)
+all_feature_names = list(numeric_cols) + list(ohe_feature_names)
+
+# Transform the input data using the trained preprocessor
+input_transformed = model["pre"].transform(input_df)
+
+# Calculate SHAP values for the transformed input
+# shap_values[1] is for the positive class (Churn=1)
+shap_values = explainer.shap_values(input_transformed)
+
+# Create a DataFrame for the SHAP force plot input
+# Note: Input must be the transformed data, but the feature names map to the original OHE columns
+shap_input_df = pd.DataFrame(input_transformed, columns=all_feature_names)
+
+# Plot SHAP force plot for the Churn (1) class
 shap.initjs()
-st.write("### Contribution of each feature to the prediction:")
 
 force_plot_html = shap.force_plot(
     explainer.expected_value[1],
     shap_values[1],
-    input_df,
+    shap_input_df,
     matplotlib=False
 )
 
-# Render SHAP in Streamlit
-st.components.v1.html(force_plot_html.html(), height=300, scrolling=True)
+# Render SHAP in Streamlit using st.components.v1.html
+st.components.v1.html(force_plot_html.html(), height=350, scrolling=True)
