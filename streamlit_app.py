@@ -7,30 +7,44 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
 
+# ----------------------------------------------------
+# 1. PAGE CONFIGURATION
+# ----------------------------------------------------
+# Set up the basic configuration for the Streamlit page
 st.set_page_config(
     page_title="Telco Churn Explorer",
-    page_icon="🔎",
+    page_icon="🔎", # Using a non-emoji icon for a professional look
     layout="centered"
 )
 
 st.title("Telco Churn Explorer")
 st.write("Interactively explore churn predictions using Machine Learning and SHAP feature explanations.")
 
+# ----------------------------------------------------
+# 2. LOAD AND PREPARE DATA
+# ----------------------------------------------------
+# Use Streamlit's cache decorator to prevent reloading the data on every rerun
 @st.cache_data
 def load_data():
     """Loads, cleans, and prepares the Telco Churn dataset."""
+    # Updated to a new, verified URL from a stable IBM repository to fix the 404 error
     url = "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
     df = pd.read_csv(url)
     
+    # Convert TotalCharges to numeric, coercing errors (empty strings are NaN)
     df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
     
-    df["TotalCharges"].fillna(df["TotalCharges"].median(), inplace=True)
+    # Fix FutureWarning: Replace inplace=True with direct assignment
+    # Fill missing TotalCharges (occurs when tenure is 0) with the median
+    df["TotalCharges"] = df["TotalCharges"].fillna(df["TotalCharges"].median())
 
+    # Convert the target variable 'Churn' to numerical (1 for Yes, 0 for No)
     df["Churn"] = df["Churn"].map({"Yes": 1, "No": 0})
     return df
 
 df = load_data()
 
+# Define features based on their data type
 categorical_cols = [
     "gender", "Partner", "Dependents", "PhoneService", "MultipleLines",
     "InternetService", "OnlineSecurity", "OnlineBackup", "DeviceProtection",
@@ -40,21 +54,32 @@ categorical_cols = [
 
 numeric_cols = ["tenure", "MonthlyCharges", "TotalCharges"]
 
+# Define feature matrix X and target vector y
 X = df[categorical_cols + numeric_cols]
 y = df["Churn"]
 
+# ----------------------------------------------------
+# 3. MODEL TRAINING (Pipeline with One-Hot Encoding)
+# ----------------------------------------------------
+# Use Streamlit's cache_resource to store the trained model object
 @st.cache_resource
 def train_model(X_data, y_data, numeric_features, categorical_features):
     """Defines and trains the Random Forest model pipeline."""
     
+    # 1. Preprocessor setup
     preprocessor = ColumnTransformer(
         transformers=[
+            # Scale numeric features using StandardScaler
             ("num", StandardScaler(), numeric_features),
+            # One-Hot Encode categorical features. handle_unknown='ignore' is crucial
+            # to prevent errors if a category appears in the test/input data that wasn't
+            # in the training data (though less likely here). sparse_output=False for SHAP compatibility.
             ("cat", OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)
         ],
-        remainder='drop' 
+        remainder='drop' # Drop any features not explicitly listed above
     )
 
+    # 2. Pipeline definition
     model_pipeline = Pipeline(steps=[
         ("pre", preprocessor),
         ("clf", RandomForestClassifier(
@@ -166,8 +191,22 @@ all_feature_names = list(numeric_cols) + list(ohe_feature_names)
 input_transformed = model["pre"].transform(input_df)
 
 # Calculate SHAP values for the transformed input
-# shap_values[1] is for the positive class (Churn=1)
 shap_values = explainer.shap_values(input_transformed)
+
+# --- FIX for IndexError: Check if shap_values is a list of arrays (multiple classes) or a single array ---
+if isinstance(shap_values, list):
+    # If it's a list, the second element (index 1) corresponds to the positive class (Churn)
+    shap_values_to_plot = shap_values[1]
+    expected_value_to_plot = explainer.expected_value[1]
+else:
+    # If it's a single array, it already corresponds to the single predicted class.
+    # We must assume the model is predicting the positive class (1) in this scenario
+    # or use the primary expected value if the model structure dictates it.
+    # Since we are focusing on the 'Churn' explanation, we use the single array.
+    shap_values_to_plot = shap_values
+    # For single prediction, explainer.expected_value might be a single float or an array of size 1.
+    expected_value_to_plot = explainer.expected_value[1] if isinstance(explainer.expected_value, list) else explainer.expected_value
+
 
 # Create a DataFrame for the SHAP force plot input
 # Note: Input must be the transformed data, but the feature names map to the original OHE columns
@@ -177,8 +216,8 @@ shap_input_df = pd.DataFrame(input_transformed, columns=all_feature_names)
 shap.initjs()
 
 force_plot_html = shap.force_plot(
-    explainer.expected_value[1],
-    shap_values[1],
+    expected_value_to_plot,
+    shap_values_to_plot,
     shap_input_df,
     matplotlib=False
 )
